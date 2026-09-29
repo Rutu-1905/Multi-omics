@@ -1,0 +1,374 @@
+# ============================================================
+# TCGA-BRCA RNA-seq Differential Expression & Pathway Analysis
+# Author: Rutuja Puri
+# ============================================================
+
+# Project: TCGA-BRCA RNA-seq Analysis
+# Organism: Homo sapiens
+# Analysis: Differential Expression + GO + KEGG Enrichment
+
+# ============================================================
+# 1. Load required packages
+# ============================================================
+
+library(DESeq2)
+library(pheatmap)
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(enrichplot)
+library(ggplot2)
+
+# ============================================================
+# 2. Set project directory
+# ============================================================
+
+project_dir <- "C:/Users/Rutu/Desktop/Multi-omics"
+
+setwd(project_dir)
+
+getwd()
+
+# ============================================================
+# 3. Load existing TCGA-BRCA data
+# ============================================================
+
+count_matrix <- readRDS(
+  "TCGA_BRCA_count_matrix.rds"
+)
+
+sample_metadata <- read.csv(
+  "TCGA_BRCA_sample_metadata.csv",
+  row.names = 1,
+  check.names = FALSE
+)C
+
+# Check dimensions
+dim(count_matrix)
+dim(sample_metadata)
+
+# Check metadata
+head(sample_metadata)
+
+# Check count matrix
+count_matrix[1:5, 1:5]
+
+
+# ============================================================
+# 4. Differential Expression Analysis using limma
+# ============================================================
+
+library(limma)
+library(edgeR)
+
+# Convert count matrix to matrix
+count_matrix <- as.matrix(count_matrix)
+
+# Create DGEList object
+dge <- DGEList(
+  counts = count_matrix,
+  group = sample_metadata$sample_type
+)
+
+# Filter lowly expressed genes
+keep <- filterByExpr(
+  dge,
+  group = sample_metadata$sample_type
+)
+
+dge <- dge[keep, , keep.lib.sizes = FALSE]
+
+# Normalize library sizes
+dge <- calcNormFactors(dge)
+
+# Create design matrix
+design <- model.matrix(
+  ~ 0 + sample_metadata$sample_type
+)
+
+colnames(design) <- c(
+  "Solid_Tissue_Normal",
+  "Primary_Tumor"
+)
+
+# voom transformation
+v <- voom(
+  dge,
+  design,
+  plot = TRUE
+)
+
+# Fit linear model
+fit <- lmFit(v, design)
+
+# Tumor vs Normal contrast
+contrast_matrix <- makeContrasts(
+  Primary_Tumor - Solid_Tissue_Normal,
+  levels = design
+)
+
+fit2 <- contrasts.fit(
+  fit,
+  contrast_matrix
+)
+
+fit2 <- eBayes(fit2)
+
+# Extract differential expression results
+results_de <- topTable(
+  fit2,
+  number = Inf,
+  adjust.method = "BH"
+)
+
+# Save complete results
+write.csv(
+  results_de,
+  "results/TCGA_BRCA_limma_results.csv"
+)
+
+dim(results_de)
+
+
+# ============================================================
+# 5. Identify Significant Differentially Expressed Genes
+# ============================================================
+
+deg <- results_de
+
+# Filter significant DEGs
+deg <- deg[
+  !is.na(deg$adj.P.Val) &
+  deg$adj.P.Val < 0.05 &
+  abs(deg$logFC) >= 1,
+]
+
+# Save significant DEGs
+write.csv(
+  deg,
+  "results/TCGA_BRCA_DEGs.csv"
+)
+
+# Upregulated genes
+upregulated <- deg[
+  deg$logFC >= 1,
+]
+
+write.csv(
+  upregulated,
+  "results/TCGA_BRCA_Upregulated.csv"
+)
+
+# Downregulated genes
+downregulated <- deg[
+  deg$logFC <= -1,
+]
+
+write.csv(
+  downregulated,
+  "results/TCGA_BRCA_Downregulated.csv"
+)
+
+# Summary
+cat("Total significant DEGs:", nrow(deg), "\n")
+cat("Upregulated genes:", nrow(upregulated), "\n")
+cat("Downregulated genes:", nrow(downregulated), "\n")
+
+
+# ============================================================
+# 6. Volcano Plot
+# ============================================================
+
+library(ggplot2)
+
+volcano_data <- as.data.frame(results_de)
+
+volcano_data$Significance <- "Not Significant"
+
+volcano_data$Significance[
+  volcano_data$adj.P.Val < 0.05 &
+  volcano_data$logFC >= 1
+] <- "Upregulated"
+
+volcano_data$Significance[
+  volcano_data$adj.P.Val < 0.05 &
+  volcano_data$logFC <= -1
+] <- "Downregulated"
+
+volcano_plot <- ggplot(
+  volcano_data,
+  aes(
+    x = logFC,
+    y = -log10(adj.P.Val),
+    color = Significance
+  )
+) +
+  geom_point(alpha = 0.6, size = 1.2) +
+  theme_minimal() +
+  labs(
+    title = "TCGA-BRCA Differential Gene Expression",
+    x = "log2 Fold Change",
+    y = "-log10 Adjusted P-value"
+  )
+
+print(volcano_plot)
+
+ggsave(
+  "figures/TCGA_BRCA_Volcano_Plot.png",
+  volcano_plot,
+  width = 10,
+  height = 7,
+  dpi = 300
+)
+
+
+# ============================================================
+# 7. Top 50 Differentially Expressed Genes Heatmap
+# ============================================================
+
+library(pheatmap)
+
+# Select top 50 DEGs by adjusted p-value
+top50_genes <- rownames(
+  deg[order(deg$adj.P.Val), ]
+)[1:min(50, nrow(deg))]
+
+# Use voom-normalized expression values
+heatmap_data <- v$E[
+  top50_genes,
+  ,
+  drop = FALSE
+]
+
+# Save heatmap
+png(
+  "figures/TCGA_BRCA_Top50_Heatmap.png",
+  width = 1400,
+  height = 1200,
+  res = 150
+)
+
+pheatmap(
+  heatmap_data,
+  show_rownames = TRUE,
+  show_colnames = FALSE,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  scale = "row",
+  main = "Top 50 Differentially Expressed Genes"
+)
+
+dev.off()
+
+
+# ============================================================
+# 8. GO Biological Process Enrichment
+# ============================================================
+
+library(clusterProfiler)
+library(org.Hs.eg.db)
+
+# Remove Ensembl version numbers
+deg_ids <- sub("\\..*$", "", rownames(deg))
+
+# Convert significant DEG Ensembl IDs to Entrez IDs
+gene_conversion <- bitr(
+  deg_ids,
+  fromType = "ENSEMBL",
+  toType = "ENTREZID",
+  OrgDb = org.Hs.eg.db
+)
+
+# Remove duplicate Entrez IDs
+gene_conversion <- gene_conversion[
+  !duplicated(gene_conversion$ENTREZID),
+]
+
+# GO Biological Process enrichment
+ego <- enrichGO(
+  gene = gene_conversion$ENTREZID,
+  OrgDb = org.Hs.eg.db,
+  keyType = "ENTREZID",
+  ont = "BP",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05,
+  qvalueCutoff = 0.2,
+  readable = TRUE
+)
+
+# Save GO results
+write.csv(
+  as.data.frame(ego),
+  "results/TCGA_BRCA_GO_Biological_Process_Enrichment.csv",
+  row.names = FALSE
+)
+
+# GO dot plot
+p_go <- dotplot(
+  ego,
+  showCategory = 20,
+  title = "GO Biological Process Enrichment - TCGA BRCA"
+)
+
+print(p_go)
+
+ggsave(
+  "figures/TCGA_BRCA_GO_Dotplot.png",
+  p_go,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+# ============================================================
+# 9. KEGG Pathway Enrichment
+# ============================================================
+
+library(clusterProfiler)
+
+# KEGG enrichment using significant DEG Entrez IDs
+kegg <- enrichKEGG(
+  gene = gene_conversion$ENTREZID,
+  organism = "hsa",
+  pAdjustMethod = "BH",
+  pvalueCutoff = 0.05
+)
+
+# Save KEGG results
+write.csv(
+  as.data.frame(kegg),
+  "results/TCGA_BRCA_KEGG_Enrichment.csv",
+  row.names = FALSE
+)
+
+# KEGG dot plot
+p_kegg <- dotplot(
+  kegg,
+  showCategory = 20,
+  title = "KEGG Pathway Enrichment - TCGA BRCA"
+)
+
+print(p_kegg)
+
+ggsave(
+  "figures/TCGA_BRCA_KEGG_Dotplot.png",
+  p_kegg,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+# Top 10 KEGG pathways
+kegg_df <- as.data.frame(kegg)
+
+kegg_top10 <- kegg_df[
+  order(kegg_df$p.adjust),
+][1:min(10, nrow(kegg_df)), ]
+
+write.csv(
+  kegg_top10,
+  "results/TCGA_BRCA_Top10_KEGG_Pathways.csv",
+  row.names = FALSE
+)
+
+cat("Number of enriched KEGG pathways:", nrow(kegg_df), "\n")
+

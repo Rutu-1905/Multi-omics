@@ -1,0 +1,18 @@
+# R files
+.RData
+.Rhistory
+.Rproj.user/
+
+# Large TCGA data
+TCGA_BRCA_count_matrix.rds
+
+# GDC raw/downloaded data
+GDCdata/
+
+# Archives
+*.tar
+*.tar.gz
+
+# Temporary files
+*.tmp
+*.log
